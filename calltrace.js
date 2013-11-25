@@ -3,10 +3,15 @@ var Emitter = require( 'async-emitter' )
 var __slice = Array.prototype.slice
 
 function Tracer() {
+  
+  // Inherit from Emitter
   Emitter.call( this )
-  this.functions = {}
+  
+  this.originals = []
+  
 }
 
+// Inherit from Emitter
 require( 'util' ).inherits(
   Tracer, Emitter
 )
@@ -29,7 +34,7 @@ Tracer.Frame = function( callSite ) {
 }
 
 Tracer.prototype.toString = function() {
-  return JSON.stringify( this )
+  return JSON.stringify( this, null, 2 )
 }
 
 Tracer.prototype.resolve = function( path ) {
@@ -57,14 +62,24 @@ Tracer.prototype.resolve = function( path ) {
   
 }
 
-Tracer.prototype.capture = function( path ) {
+Tracer.prototype.capture = function( object, method, captureStack ) {
   
-  var ref = this.resolve( path )
-  var object = ref[0], method = ref[1]
+  if( typeof object === 'string' ) {
+    
+    var ref = this.resolve( object )
+    
+    captureStack = method
+    object = ref[0]
+    method = ref[1]
+    
+  }
+  
   var original = object[ method ]
   var self = this
   
-  this.functions[ path ] = original
+  this.originals.push([
+    object, method, original
+  ])
   
   object[ method ] = function patched() {
     
@@ -73,26 +88,54 @@ Tracer.prototype.capture = function( path ) {
     var diff = process.hrtime( start )
     
     self.emit( 'capture', {
-      fn: path,
+      name: method,
+      fn: original,
       argv: __slice.call( arguments ),
       time: ( diff[0] * 1e9 + diff[1] ) / 1e6,
-      stack: self.captureStackTrace()
+      stack: captureStack !== false ?
+        self.captureStackTrace() : null
     })
     
     return retval
     
   }
   
+  return this.revert.bind( this, object, method )
+  
 }
 
-Tracer.prototype.revert = function( path ) {
+Tracer.prototype.revert = function( object, method ) {
   
-  var ref = this.resolve( path )
-  var object = ref[0], method = ref[1]
+  if( typeof object === 'string' ) {
+    var ref = this.resolve( object )
+    object = ref[0]
+    method = ref[1]
+  }
   
-  object[ method ] = this.functions[ path ]
+  // Look for a stored path
+  var path = this.originals.filter(
+    function( entry ) {
+      return entry[0] === object &&
+             entry[1] === method
+    }
+  )[0]
   
-  return delete this.functions[ path ]
+  // Did we have a stored original?
+  // If yes, where exactly is it?
+  var index = this.originals.indexOf( path )
+  
+  if( ~index ) {
+    // Restore original
+    object[ method ] = path[2]
+    // Remove from stored originals
+    this.originals.splice( index )
+    // We succeeded in restoring the original
+    return true
+  }
+  
+  // Either we already restored it,
+  // or we never traced it in the first place
+  return false
   
 }
 
